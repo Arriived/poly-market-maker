@@ -1,14 +1,13 @@
 import logging
+import math
 import sys
 import time
 from py_clob_client.client import ClobClient, ApiCreds, OrderArgs, FilterParams
 from py_clob_client.exceptions import PolyApiException
 
-from poly_market_maker.utils import randomize_default_price
 from poly_market_maker.constants import OK
 from poly_market_maker.metrics import clob_requests_latency
 
-DEFAULT_PRICE = 0.5
 
 
 class ClobApi:
@@ -23,11 +22,11 @@ class ClobApi:
 
         try:
             api_creds = self.client.derive_api_key()
-            self.logger.debug(f"Api key found: {api_creds.api_key}")
+            self.logger.debug("CLOB API credentials derived")
         except PolyApiException:
             self.logger.debug("Api key not found. Creating a new one...")
             api_creds = self.client.create_api_key()
-            self.logger.debug(f"Api key created: {api_creds.api_key}.")
+            self.logger.debug("CLOB API credentials created")
 
         self.client = self._init_client_L2(
             host=host,
@@ -60,21 +59,16 @@ class ClobApi:
                 (time.time() - start_time)
             )
             if resp.get("mid") is not None:
-                return float(resp.get("mid"))
+                price = float(resp["mid"])
+                if math.isfinite(price) and 0 < price < 1:
+                    return price
+            raise ValueError("CLOB midpoint is missing or invalid")
         except Exception as e:
             self.logger.error(f"Error fetching current price from the CLOB API: {e}")
             clob_requests_latency.labels(method="get_midpoint", status="error").observe(
                 (time.time() - start_time)
             )
-
-        return self._rand_price()
-
-    def _rand_price(self) -> float:
-        price = randomize_default_price(DEFAULT_PRICE)
-        self.logger.info(
-            f"Could not fetch price from CLOB API, returning random price: {price}"
-        )
-        return price
+            raise
 
     def get_orders(self, condition_id: str):
         """
@@ -96,7 +90,7 @@ class ClobApi:
             clob_requests_latency.labels(method="get_orders", status="error").observe(
                 (time.time() - start_time)
             )
-        return []
+            raise
 
     def place_order(self, price: float, size: float, side: str, token_id: int) -> str:
         """
