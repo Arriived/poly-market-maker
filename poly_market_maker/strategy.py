@@ -54,11 +54,11 @@ class StrategyManager:
 
         try:
             orderbook = self.get_order_book()
+            token_prices = self.get_token_prices()
         except Exception as e:
             self.logger.error(f"{e}")
             return
 
-        token_prices = self.get_token_prices()
         self.logger.debug(f"{token_prices}")
         (orders_to_cancel, orders_to_place) = self.strategy.get_orders(
             orderbook, token_prices
@@ -74,6 +74,9 @@ class StrategyManager:
 
     def get_order_book(self):
         orderbook = self.order_book_manager.get_order_book()
+
+        if not orderbook.is_fresh:
+            raise RuntimeError("Order book or balances are unavailable; skipping new quotes")
 
         if None in orderbook.balances.values():
             self.logger.debug("Balances invalid/non-existent")

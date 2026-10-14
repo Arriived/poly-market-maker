@@ -23,6 +23,7 @@ class OrderBook:
         balances: dict,
         orders_being_placed: bool,
         orders_being_cancelled: bool,
+        is_fresh: bool = True,
     ):
         assert isinstance(orders_being_placed, bool)
         assert isinstance(orders_being_cancelled, bool)
@@ -31,6 +32,7 @@ class OrderBook:
         self.balances = balances
         self.orders_being_placed = orders_being_placed
         self.orders_being_cancelled = orders_being_cancelled
+        self.is_fresh = is_fresh
 
 
 class OrderBookManager:
@@ -58,6 +60,7 @@ class OrderBookManager:
         self._executor = ThreadPoolExecutor(max_workers=max_workers)
         self._lock = threading.Lock()
         self._state = None
+        self._refresh_failed = False
         self._refresh_count = 0
         self._currently_placing_orders = 0
         self._orders_placed = list()
@@ -177,6 +180,7 @@ class OrderBookManager:
             balances=self._state["balances"],
             orders_being_placed=self._currently_placing_orders > 0,
             orders_being_cancelled=len(self._order_ids_cancelling) > 0,
+            is_fresh=not self._refresh_failed,
         )
 
     def place_order(self, place_order_function: Callable[[Order], Order], order: Order):
@@ -358,6 +362,14 @@ class OrderBookManager:
                 # get balances
                 balances = self._run_get_balances()
 
+                if orders is None or (self.get_balances_function is not None and balances is None):
+                    # Preserve local placement/cancellation overlays until a complete
+                    # authoritative refresh confirms them. Stale state is cancellation-only.
+                    with self._lock:
+                        self._refresh_failed = True
+                    time.sleep(self.refresh_frequency)
+                    continue
+
                 with self._lock:
                     self._order_ids_cancelled = (
                         self._order_ids_cancelled - orders_already_cancelled_before
@@ -379,6 +391,9 @@ class OrderBookManager:
                         self._state["orders"] = orders
                     if balances is not None:
                         self._state["balances"] = balances
+                    elif self.get_balances_function is None:
+                        self._state["balances"] = {}
+                    self._refresh_failed = False
                     # self._state = {'orders': orders, 'balances': balances}
                     self._refresh_count += 1
 
@@ -390,7 +405,9 @@ class OrderBookManager:
                     f" buys: {len([order for order in orders if order.side == Side.BUY])}, "
                     f" sells: {len([order for order in orders if order.side == Side.SELL])})"
                 )
-            except ValueError as e:
+            except Exception as e:
+                with self._lock:
+                    self._refresh_failed = True
                 self.logger.error(f"Failed to fetch the order book or balances ({e})!")
 
             time.sleep(self.refresh_frequency)
